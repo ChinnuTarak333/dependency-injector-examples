@@ -44,14 +44,14 @@ A **dependency** is any object or service that a class needs to perform its work
 
 Consider an `OrderService` class that processes customer orders:
 
-- It needs an **EmailService** to send confirmation emails
-- It needs a **PaymentProcessor** to charge the customer
-- It needs a **Database** to save order records
+- It needs an **SMTPEmailService** to send confirmation emails
+- It needs a **StripePaymentProcessor** to charge the customer
+- It needs a **MySQLDatabase** to save order records
 
 In this case:
-- `OrderService` **depends on** `EmailService`
-- `OrderService` **depends on** `PaymentProcessor`
-- `OrderService` **depends on** `Database`
+- `OrderService` **depends on** `SMTPEmailService`
+- `OrderService` **depends on** `StripePaymentProcessor`
+- `OrderService` **depends on** `MySQLDatabase`
 
 ---
 
@@ -74,9 +74,9 @@ When a class creates its own dependencies, it becomes **tightly coupled** to tho
 CLASS OrderService:
     CONSTRUCTOR():
         // OrderService creates its own dependencies
-        this.emailService = NEW EmailService("smtp.company.com", 587)
-        this.paymentProcessor = NEW PaymentProcessor("stripe-api-key")
-        this.database = NEW Database("mysql://prod-server:3306")
+        this.emailService = NEW SMTPEmailService("smtp.company.com", 587)
+        this.paymentProcessor = NEW StripePaymentProcessor("stripe-api-key")
+        this.database = NEW MySQLDatabase("mysql://prod-server:3306")
     
     METHOD processOrder(order):
         this.paymentProcessor.charge(order.amount, order.card)
@@ -193,34 +193,40 @@ Without centralized dependency management, the same configuration must be repeat
 ```
 CLASS OrderService:
     CONSTRUCTOR():
-        this.logger = NEW Logger("/var/log/app.log", "ERROR")
+        // OrderService creates its own database connection
+        this.database = NEW MySQLDatabase("mysql://prod-server:3306", "orders_db")
+        this.emailService = NEW SMTPEmailService("smtp.company.com", 587)
 
 CLASS CustomerService:
     CONSTRUCTOR():
-        this.logger = NEW Logger("/var/log/app.log", "ERROR")  // Duplicated!
+        // CustomerService duplicates the same database configuration!
+        this.database = NEW MySQLDatabase("mysql://prod-server:3306", "orders_db")
 
 CLASS PaymentService:
     CONSTRUCTOR():
-        this.logger = NEW Logger("/var/log/app.log", "ERROR")  // Duplicated!
+        // PaymentService duplicates it again!
+        this.database = NEW MySQLDatabase("mysql://prod-server:3306", "orders_db")
 
 CLASS ShippingService:
     CONSTRUCTOR():
-        this.logger = NEW Logger("/var/log/app.log", "ERROR")  // Duplicated!
+        // ShippingService also duplicates it!
+        this.database = NEW MySQLDatabase("mysql://prod-server:3306", "orders_db")
 ```
 
 #### What's Wrong?
 
-- ❌ **Configuration repeated 4 times**
-- ❌ **To change log file path, must update 4 places**
-- ❌ **Risk of inconsistency:** One class might have a typo
+- ❌ **Database configuration repeated 4 times**
+- ❌ **To change database server, must update 4 places**
+- ❌ **Risk of inconsistency:** One class might have a typo in the connection string
 - ❌ **Violates DRY (Don't Repeat Yourself) principle**
-- ❌ **Creates 4 separate Logger instances:** Waste of resources
+- ❌ **Creates 4 separate Database connections:** Inefficient resource usage
 - ❌ **Difficult to maintain:** Changes must be synchronized across multiple locations
 
 #### Real-World Impact
 
 - Database connection strings scattered across dozens of files
-- API keys duplicated everywhere
+- Email server configurations duplicated everywhere
+- API keys repeated in multiple classes
 - Changing configuration requires searching the entire codebase
 - Inconsistent configurations lead to bugs
 
@@ -239,8 +245,6 @@ Instead of classes creating dependencies, they declare what they need, and a DI 
 ---
 
 ### Solution 1: Program to Interfaces
-
-![Dependency Injection with DI Framework](pngs/dependency_injection_with_di.png)
 
 ![Using Abstractions with DI](pngs/solution_1_with_abstractions.png)
 
@@ -399,10 +403,10 @@ With a DI framework, all configuration happens in **one centralized location**. 
 // Configuration Module (ONE place for all configuration)
 CLASS ApplicationConfiguration:
     METHOD configure(container):
-        // Configure Logger as SINGLETON (one instance for entire app)
+        // Configure Database as SINGLETON (one shared connection for entire app)
         container.registerSingleton(
-            ILogger,
-            FileLogger("/var/log/app.log", "ERROR")
+            IDatabase,
+            MySQLDatabase("mysql://prod-server:3306", "orders_db")
         )
         
         // Configure EmailService
@@ -426,15 +430,16 @@ config.configure(container)
 orderService = container.resolve(OrderService)
 customerService = container.resolve(CustomerService)
 paymentService = container.resolve(PaymentService)
+shippingService = container.resolve(ShippingService)
 
-// All services share the SAME Logger instance (singleton)
+// All services share the SAME Database connection (singleton)
 ```
 
 #### Benefits
 
 - ✅ **Configuration in ONE place**
-- ✅ **Change log file once, affects all services**
-- ✅ **One shared Logger instance** (singleton scope) - resource efficient
+- ✅ **Change database server once, affects all services**
+- ✅ **One shared Database connection** (singleton scope) - resource efficient
 - ✅ **No code duplication**
 - ✅ **Environment-specific configuration:** Different configs for dev/staging/production
 - ✅ **Easy to switch environments**
@@ -445,24 +450,38 @@ paymentService = container.resolve(PaymentService)
 ```
 CLASS DevelopmentConfiguration:
     METHOD configure(container):
+        // Use in-memory database for development
         container.registerSingleton(
-            ILogger,
-            ConsoleLogger("DEBUG")  // Log to console in dev
-        )
-        container.register(
             IDatabase,
-            InMemoryDatabase()  // Use in-memory DB for dev
+            InMemoryDatabase()
+        )
+        // Use console email service (doesn't actually send emails)
+        container.register(
+            IEmailService,
+            ConsoleEmailService()
+        )
+        // Use test payment processor
+        container.register(
+            IPaymentProcessor,
+            TestPaymentProcessor()
         )
 
 CLASS ProductionConfiguration:
     METHOD configure(container):
+        // Use real MySQL database for production
         container.registerSingleton(
-            ILogger,
-            FileLogger("/var/log/app.log", "ERROR")  // Log to file in prod
-        )
-        container.register(
             IDatabase,
-            PostgresDatabase("prod-server", 5432)  // Use real DB in prod
+            MySQLDatabase("mysql://prod-server:3306", "orders_db")
+        )
+        // Use real SMTP email service
+        container.register(
+            IEmailService,
+            SMTPEmailService("smtp.company.com", 587)
+        )
+        // Use real Stripe payment processor
+        container.register(
+            IPaymentProcessor,
+            StripePaymentProcessor("sk_live_xxx")
         )
 ```
 
@@ -561,4 +580,3 @@ The specific syntax varies, but the principles remain the same across all langua
 ---
 
 **End of Document**
-
